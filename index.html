@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Monitoring Dashboard Final</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js" defer></script>
+</head>
+<body>
+    <div class="dashboard-layout">
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <span class="header-icon">🛰️</span>
+                <h2>Monitoring</h2>
+            </div>
+            <nav class="sidebar-nav">
+                <button class="nav-button active" data-target="realtime">Real-Time</button>
+                <button class="nav-button" data-target="grafik">Grafik</button>
+                <button class="nav-button" data-target="history">History</button>
+            </nav>
+            <div class="sidebar-footer">
+                <button id="reset-dashboard-button" class="reset-button">Reset Data</button>
+            </div>
+        </aside>
+
+        <main class="main-content">
+            <div id="realtime" class="content-page active">
+                <h1>Data Real-Time</h1>
+                <div class="status-card success">
+                    <p class="status-label"><span class="status-dot"></span> Status Koneksi</p>
+                    <h2 id="status-text" class="status-text">Menunggu Data Sensor</h2>
+                    <p id="data-value" class="data-value">PPM (Sensor)</p>
+                    <p id="timestamp" class="timestamp">Terakhir diperbarui: -</p>
+                </div>
+                <div class="summary-cards-container">
+                    <div class="summary-card"><h3 id="summary-min" class="summary-value">-</h3><p class="summary-label">Minimum</p></div>
+                    <div class="summary-card"><h3 id="summary-max" class="summary-value">-</h3><p class="summary-label">Maksimum</p></div>
+                    <div class="summary-card"><h3 id="summary-avg" class="summary-value">-</h3><p class="summary-label">Rata-rata</p></div>
+                </div>
+                <div class="action-buttons">
+                    <button class="action-btn" id="refresh-data-btn">Perbarui Data</button>
+                    <div class="toggle-switch">
+                        <input type="checkbox" id="auto-refresh-toggle" checked><label for="auto-refresh-toggle" class="slider"></label><span>Auto Refresh</span>
+                    </div>
+                </div>
+                <div id="error-banner" class="error-banner" style="display: none;"></div>
+            </div>
+
+            <div id="grafik" class="content-page">
+                <h1>Visualisasi Grafik</h1>
+                <div class="chart-toggle-buttons">
+                    <button class="toggle-button active" data-chart="realtime-chart-container">Grafik Real-time</button>
+                    <button class="toggle-button" data-chart="newton-raphson-container">Grafik Newton-Raphson</button>
+                </div>
+                <div id="realtime-chart-container" class="chart-wrapper active">
+                    <div class="chart-controls"><button id="reset-chart-button" class="action-btn small">Reset Grafik Sensor</button></div>
+                    <div class="chart-container"><canvas id="realtimeChart"></canvas></div>
+                </div>
+                <div id="newton-raphson-container" class="chart-wrapper">
+                    <div class="nr-controls">
+                        <p>Fungsi: <strong>f(x) = x² - 2</strong></p>
+                        <p>Iterasi: <strong id="nr-iteration">0</strong></p>
+                        <p>Nilai x: <strong id="nr-x-value">-</strong></p>
+                        <button id="nr-next-step-button" class="action-btn small">Lakukan Iterasi</button>
+                        <button id="nr-reset-button" class="action-btn small">Reset NR</button>
+                        <div class="toggle-switch" style="margin-left: 20px;">
+                            <input type="checkbox" id="nr-auto-iterate-toggle">
+                            <label for="nr-auto-iterate-toggle" class="slider"></label>
+                            <span>Auto Iterate</span>
+                        </div>
+                    </div>
+                    <div class="chart-container"><canvas id="newtonRaphsonChart"></canvas></div>
+                </div>
+            </div>
+
+            <div id="history" class="content-page">
+                <h1>History Log</h1>
+                <div class="table-container">
+                    <table>
+                        <thead><tr><th>ID</th><th>Timestamp</th><th>Tipe</th><th>Keterangan</th></tr></thead>
+                        <tbody id="history-table-body"></tbody>
+                    </table>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script>
+    document.addEventListener('DOMContentLoaded', () => {
+        // Referensi Elemen DOM
+        const navButtons = document.querySelectorAll('.nav-button');
+        const contentPages = document.querySelectorAll('.content-page');
+        const statusCard = document.querySelector('.status-card');
+        const statusText = document.getElementById('status-text');
+        const dataValueText = document.getElementById('data-value');
+        const timestampText = document.getElementById('timestamp');
+        const summaryMinValue = document.getElementById('summary-min');
+        const summaryMaxValue = document.getElementById('summary-max');
+        const summaryAvgValue = document.getElementById('summary-avg');
+        const refreshDataBtn = document.getElementById('refresh-data-btn');
+        const autoRefreshToggle = document.getElementById('auto-refresh-toggle');
+        const errorBanner = document.getElementById('error-banner');
+        const resetChartBtn = document.getElementById('reset-chart-button');
+        const realtimeChartCtx = document.getElementById('realtimeChart').getContext('2d');
+        const historyTableBody = document.getElementById('history-table-body');
+        const resetDashboardBtn = document.getElementById('reset-dashboard-button');
+
+        // Elemen Newton-Raphson
+        const nrAutoIterateToggle = document.getElementById('nr-auto-iterate-toggle');
+        let nrAutoIterateIntervalId = null;
+
+        let sensorDataForCalc = []; // Untuk menyimpan data sensor yang digunakan untuk kalkulasi min/max/avg
+        let autoRefreshIntervalId = null;
+
+        // =====================================================================
+        // KONEKSI KE BACKEND (FULL-STACK)
+        // =====================================================================
+        // Fungsi ini digunakan untuk log umum dan reset dashboard (bukan data sensor)
+        async function saveLogToServer(logData) {
+            try {
+                const response = await fetch('/api/log', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(logData)
+                });
+                if (!response.ok) throw new Error(`Server error: ${await response.text()}`);
+                console.log('Log berhasil disimpan');
+                errorBanner.style.display = 'none';
+                statusCard.classList.remove('error');
+                statusCard.classList.add('success');
+                statusText.textContent = 'Terhubung';
+            } catch (error) {
+                console.error("Gagal mengirim log ke server:", error);
+                errorBanner.textContent = 'Koneksi ke server backend gagal. Pastikan Rust server berjalan.';
+                errorBanner.style.display = 'block';
+                statusCard.classList.remove('success');
+                statusCard.classList.add('error');
+                statusText.textContent = 'Offline';
+            }
+        }
+
+        // Fungsi ini mengambil semua log dari backend dan memperbarui UI
+        async function fetchAndRenderHistory() {
+            try {
+                const response = await fetch('/api/logs');
+                if (!response.ok) throw new Error('Gagal mengambil logs');
+                const logs = await response.json();
+                historyTableBody.innerHTML = ''; // Kosongkan tabel sebelum mengisi ulang
+                
+                let latestSensorValue = null;
+                let latestSensorTimestamp = null;
+
+                logs.forEach(log => {
+                    // Update status koneksi jika ada log yang berhasil diambil
+                    errorBanner.style.display = 'none';
+                    statusCard.classList.remove('error');
+                    statusCard.classList.add('success');
+                    statusText.textContent = 'Terhubung';
+
+                    const row = document.createElement('tr');
+                    const displayId = (log._id && log._id.$oid) ? log._id.$oid.slice(-6).toUpperCase() : 'N/A';
+                    row.innerHTML = `<td>${displayId}</td><td>${log.timestamp}</td><td>${log.type}</td><td>${log.description}</td>`;
+                    historyTableBody.appendChild(row);
+
+                    // Cari log sensor terbaru untuk ditampilkan di kartu real-time
+                    if (log.type === 'Sensor') {
+                        const ppmMatch = log.description.match(/PPM: (\d+\.?\d*)/);
+                        if (ppmMatch && ppmMatch[1]) {
+                            const ppmValue = parseFloat(ppmMatch[1]);
+                            // Karena log diambil dalam urutan terbaru ke terlama (_id: -1),
+                            // log 'Sensor' pertama yang ditemukan adalah yang terbaru.
+                            if (latestSensorValue === null) {
+                                latestSensorValue = ppmValue;
+                                latestSensorTimestamp = log.timestamp;
+                            }
+                        }
+                    }
+                });
+
+                // Perbarui bagian real-time dengan data sensor terbaru
+                if (latestSensorValue !== null) {
+                    updateUiWithNewSensorValue(latestSensorValue, latestSensorTimestamp, logs);
+                } else {
+                    // Jika belum ada data sensor, tampilkan status "Menunggu"
+                    dataValueText.textContent = 'PPM (Sensor)';
+                    timestampText.textContent = 'Terakhir diperbarui: -';
+                    summaryMinValue.textContent = '-';
+                    summaryMaxValue.textContent = '-';
+                    summaryAvgValue.textContent = '-';
+                    realtimeChart.data.labels = [];
+                    realtimeChart.data.datasets[0].data = [];
+                    realtimeChart.update();
+                    statusText.textContent = 'Menunggu Data Sensor';
+                }
+
+            } catch (error) {
+                console.error("Gagal mengambil atau merender history dari server:", error);
+                errorBanner.textContent = 'Koneksi ke server backend gagal. Pastikan Rust server berjalan.';
+                errorBanner.style.display = 'block';
+                statusCard.classList.remove('success');
+                statusCard.classList.add('error');
+                statusText.textContent = 'Offline';
+            }
+        }
+
+        // =====================================================================
+        // FUNGSI-FUNGSI UTAMA UNTUK UPDATE UI
+        // =====================================================================
+        const realtimeChart = new Chart(realtimeChartCtx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: 'Sensor (PPM)',
+                    data: [],
+                    borderColor: 'var(--success-color)',
+                    backgroundColor: 'rgba(0, 191, 255, 0.1)',
+                    borderWidth: 2,
+                    pointRadius: 2,
+                    tension: 0.3,
+                    fill: true,
+                }]
+            },
+            options: {
+                maintainAspectRatio: false,
+                scales: {
+                    y: {
+                        beginAtZero: false,
+                        grid: { color: 'rgba(255, 255, 255, 0.1)' },
+                        ticks: { color: 'var(--text-secondary)' }
+                    },
+                    x: {
+                        grid: { display: false },
+                        ticks: { color: 'var(--text-secondary)' }
+                    }
+                },
+                plugins: {
+                    legend: { display: false }
+                }
+            }
+        });
+
+        // Memperbarui UI dengan nilai sensor terbaru dan data grafik
+        function updateUiWithNewSensorValue(newValue, timestamp, allLogs) {
+            dataValueText.textContent = `${newValue.toFixed(1)} PPM`;
+            // Hanya tampilkan waktu dari timestamp jika formatnya mengandung tanggal dan waktu
+            const timePart = timestamp.split(' ')[1] || timestamp;
+            timestampText.textContent = `Terakhir diperbarui: ${timePart}`;
+
+            // Filter data sensor dari semua log untuk perhitungan min/max/avg dan grafik
+            const sensorLogs = allLogs.filter(log => log.type === 'Sensor' && log.description.match(/PPM: (\d+\.?\d*)/));
+            
+            // Ambil 100 nilai sensor terbaru untuk perhitungan summary
+            sensorDataForCalc = sensorLogs
+                .map(log => parseFloat(log.description.match(/PPM: (\d+\.?\d*)/)[1]))
+                .slice(-100); 
+
+            const min = sensorDataForCalc.length > 0 ? Math.min(...sensorDataForCalc) : '-';
+            const max = sensorDataForCalc.length > 0 ? Math.max(...sensorDataForCalc) : '-';
+            const avg = sensorDataForCalc.length > 0 ? sensorDataForCalc.reduce((a, b) => a + b, 0) / sensorDataForCalc.length : '-';
+
+            summaryMinValue.textContent = typeof min === 'number' ? min.toFixed(1) : min;
+            summaryMaxValue.textContent = typeof max === 'number' ? max.toFixed(1) : max;
+            summaryAvgValue.textContent = typeof avg === 'number' ? avg.toFixed(1) : avg;
+
+            // Isi data grafik dari log sensor
+            realtimeChart.data.labels = sensorLogs
+                .map(log => {
+                    const parts = log.timestamp.split(' ');
+                    return parts.length > 1 ? parts[1] : log.timestamp; // Ambil hanya waktu
+                })
+                .slice(-30); // Ambil 30 label terakhir
+
+            realtimeChart.data.datasets[0].data = sensorLogs
+                .map(log => parseFloat(log.description.match(/PPM: (\d+\.?\d*)/)[1]))
+                .slice(-30); // Ambil 30 data point terakhir
+
+            realtimeChart.update('quiet');
+        }
+
+        // Mengatur ulang grafik real-time
+        function resetRealtimeChart() {
+            realtimeChart.data.labels = [];
+            realtimeChart.data.datasets[0].data = [];
+            realtimeChart.update();
+            saveLogToServer({ timestamp: new Date().toLocaleString('id-ID'), type: 'Grafik Reset', description: 'Grafik Sensor Direset' });
+        }
+
+        // Mengatur ulang seluruh dashboard
+        function resetDashboard() {
+            sensorDataForCalc = [];
+            resetRealtimeChart();
+            summaryMinValue.textContent = '-';
+            summaryMaxValue.textContent = '-';
+            summaryAvgValue.textContent = '-';
+            dataValueText.textContent = 'PPM (Sensor)';
+            statusText.textContent = 'Menunggu Data Sensor';
+            initNewtonRaphson(false); // Reset NR tanpa log baru untuk ini
+            saveLogToServer({ timestamp: new Date().toLocaleString('id-ID'), type: 'Dashboard Reset', description: 'Dashboard Direset Total' })
+                .then(() => fetchAndRenderHistory()); // Ambil history lagi setelah reset
+        }
+        
+        // Mengatur auto-refresh data dari backend
+        function toggleAutoRefresh(enabled) {
+            if (enabled && !autoRefreshIntervalId) {
+                autoRefreshIntervalId = setInterval(fetchAndRenderHistory, 2000); // Setiap 2 detik
+            } else if (!enabled && autoRefreshIntervalId) {
+                clearInterval(autoRefreshIntervalId);
+                autoRefreshIntervalId = null;
+            }
+        }
+
+        // =====================================================================
+        // EVENT LISTENERS
+        // =====================================================================
+        navButtons.forEach(button => {
+            button.addEventListener('click', () => {
+                navButtons.forEach(btn => btn.classList.remove('active'));
+                contentPages.forEach(page => page.classList.remove('active'));
+                button.classList.add('active');
+                const targetId = button.dataset.target;
+                document.getElementById(targetId).classList.add('active');
+                // Selalu refresh data saat beralih tab yang relevan
+                if (targetId === 'history' || targetId === 'realtime') {
+                    fetchAndRenderHistory();
+                }
+            });
+        });
+
+        refreshDataBtn.addEventListener('click', fetchAndRenderHistory);
+        autoRefreshToggle.addEventListener('change', (e) => toggleAutoRefresh(e.target.checked));
+        resetChartBtn.addEventListener('click', resetRealtimeChart);
+        resetDashboardBtn.addEventListener('click', resetDashboard);
+
+        // =====================================================================
+        // FUNGSI-FUNGSI NEWTON-RAPHSON (Tidak Berubah)
+        // =====================================================================
+        const toggleButtons = document.querySelectorAll('.toggle-button');
+        const chartWrappers = document.querySelectorAll('.chart-wrapper');
+        const nrIterationEl = document.getElementById('nr-iteration');
+        const nrXValueEl = document.getElementById('nr-x-value');
+        const nrNextStepBtn = document.getElementById('nr-next-step-button');
+        const nrResetBtn = document.getElementById('nr-reset-button');
+        const nrChartCtx = document.getElementById('newtonRaphsonChart').getContext('2d');
+        const f = x => x * x - 2;
+        const f_prime = x => 2 * x;
+        let nr_current_x, nr_iteration_count;
+        const initial_guess = 3.0;
+
+        toggleButtons.forEach(button => {
+            button.addEventListener('click', () => {
+                toggleButtons.forEach(btn => btn.classList.remove('active'));
+                chartWrappers.forEach(wrapper => wrapper.classList.remove('active'));
+                button.classList.add('active');
+                document.getElementById(button.dataset.chart).classList.add('active');
+            });
+        });
+
+        const newtonRaphsonChart = new Chart(nrChartCtx, {
+            type: 'scatter',
+            data: {
+                datasets: [{
+                    label: 'f(x) = x² - 2',
+                    data: [],
+                    type: 'line',
+                    showLine: true,
+                    borderColor: 'rgba(255, 255, 255, 0.5)',
+                    borderWidth: 1,
+                    pointRadius: 0,
+                }, {
+                    label: 'Iterasi',
+                    data: [],
+                    backgroundColor: 'var(--success-color)',
+                    pointRadius: 5,
+                }]
+            },
+            options: {
+                maintainAspectRatio: false,
+                scales: {
+                    y: {
+                        grid: { color: 'rgba(255, 255, 255, 0.1)' },
+                        ticks: { color: 'var(--text-secondary)' }
+                    },
+                    x: {
+                        grid: { color: 'rgba(255, 255, 255, 0.1)' },
+                        ticks: { color: 'var(--text-secondary)' }
+                    }
+                },
+                plugins: {
+                    legend: { labels: { color: 'var(--text-secondary)' } }
+                }
+            }
+        });
+
+        function initNewtonRaphson(logToServer = true) {
+            nr_iteration_count = 0;
+            nr_current_x = initial_guess;
+            nrIterationEl.textContent = nr_iteration_count;
+            nrXValueEl.textContent = nr_current_x.toFixed(6);
+            const functionData = [];
+            for (let x = -4; x <= 4; x += 0.1) functionData.push({ x: x, y: f(x) });
+            newtonRaphsonChart.data.datasets[0].data = functionData;
+            newtonRaphsonChart.data.datasets[1].data = [{ x: nr_current_x, y: f(nr_current_x) }];
+            newtonRaphsonChart.update();
+            if (logToServer) {
+                saveLogToServer({ timestamp: new Date().toLocaleString('id-ID'), type: 'Reset', description: `NR Reset ke x = ${initial_guess.toFixed(1)}` });
+            }
+            toggleNrAutoIterate(false);
+            nrAutoIterateToggle.checked = false;
+        }
+        
+        function toggleNrAutoIterate(enabled) {
+            if (enabled && !nrAutoIterateIntervalId) {
+                nrAutoIterateIntervalId = setInterval(performNewtonRaphsonStep, 1000); // Iterasi setiap 1 detik
+            } else if (!enabled && nrAutoIterateIntervalId) {
+                clearInterval(nrAutoIterateIntervalId);
+                nrAutoIterateIntervalId = null;
+            }
+        }
+
+
+        function performNewtonRaphsonStep() {
+            if (f_prime(nr_current_x) === 0) {
+                alert("Turunan adalah nol.");
+                return;
+            }
+            nr_current_x -= f(nr_current_x) / f_prime(nr_current_x);
+            nr_iteration_count++;
+            nrIterationEl.textContent = nr_iteration_count;
+            nrXValueEl.textContent = nr_current_x.toFixed(6);
+            newtonRaphsonChart.data.datasets[1].data.push({ x: nr_current_x, y: f(nr_current_x) });
+            newtonRaphsonChart.update();
+            saveLogToServer({ timestamp: new Date().toLocaleString('id-ID'), type: 'Newton-Raphson', description: `NR Iterasi ${nr_iteration_count}: x = ${nr_current_x.toFixed(4)}` });
+        }
+
+        nrNextStepBtn.addEventListener('click', performNewtonRaphsonStep);
+        nrResetBtn.addEventListener('click', () => initNewtonRaphson(true));
+        nrAutoIterateToggle.addEventListener('change', (e) => toggleNrAutoIterate(e.target.checked));
+
+
+        // INISIALISASI APLIKASI
+        initNewtonRaphson();
+        toggleAutoRefresh(true); // Mulai auto-refresh untuk mengambil data
+        fetchAndRenderHistory(); // Pengambilan awal
+    });
+    </script>
+</body>
+</html>
